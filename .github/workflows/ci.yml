@@ -1,0 +1,80 @@
+# PharmaPack QMS — CI pipeline
+# MySQL 8 → load schema + seed + migrations → build backend (+ unit tests) → start the API
+# → Cucumber / REST Assured API suite → Cucumber HTML / JSON / JUnit reports as artifacts.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build, unit tests, API tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+
+    env:
+      DB_URL: jdbc:mysql://127.0.0.1:3306/pharmapack_qms?useSSL=false&serverTimezone=America/New_York&allowPublicKeyRetrieval=true
+      DB_USERNAME: root
+      DB_PASSWORD: root
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Load database (schema, seed, migrations)
+        run: |
+          M="mysql -h 127.0.0.1 -P 3306 -uroot -proot"
+          $M < database/schema.sql
+          $M pharmapack_qms < database/seed.sql
+          $M pharmapack_qms < database/phase2-migration.sql
+          $M pharmapack_qms < database/phase3-password-update.sql
+          $M pharmapack_qms -e "SELECT COUNT(*) AS users FROM users; SELECT batch_number FROM batches;"
+
+      - name: Build backend (+ unit tests)
+        run: mvn -B -ntp clean package
+
+      - name: Start backend
+        run: |
+          nohup java -jar target/pharmapack-qms-*.jar > backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/products || true)
+            if [ "$code" != "000" ]; then echo "Backend up (HTTP $code)"; exit 0; fi
+            sleep 2
+          done
+          echo "Backend did not start"; cat backend.log; exit 1
+
+      - name: Run API tests (Cucumber + REST Assured)
+        working-directory: automation
+        run: mvn -B -ntp clean test
+
+      - name: Upload Cucumber reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cucumber-reports
+          path: automation/target/cucumber-reports
+
+      - name: Show backend log on failure
+        if: failure()
+        run: tail -n 150 backend.log || true

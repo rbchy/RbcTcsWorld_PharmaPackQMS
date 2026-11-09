@@ -37,10 +37,13 @@ public class ApiSteps {
     }
 
     @Given("the QMS API is running")
-    public void running() { r = authed(RestAssured.given()).get(BASE + "/api/products"); }
+    public void running() {
+        r = authed(RestAssured.given()).get(BASE + "/api/products");
+        assertEquals(200, r.statusCode(), "The API is not answering: " + r.getBody().asString());
+    }
 
     @Given("the API is running")
-    public void apiRunning() { r = authed(RestAssured.given()).get(BASE + "/api/products"); }
+    public void apiRunning() { running(); }
 
     @When("I GET {string}")
     public void get(String path) { r = authed(RestAssured.given()).get(BASE + resolve(path)); }
@@ -53,7 +56,7 @@ public class ApiSteps {
 
     @When("I POST {string} with body:")
     public void postWithBody(String path, String body) {
-        r = authed(RestAssured.given().contentType("application/json").body(resolve(body))).post(BASE + path);
+        r = authed(RestAssured.given().contentType("application/json").body(resolve(body))).post(BASE + resolve(path));
     }
 
     @Then("the HTTP status is {int}")
@@ -68,10 +71,30 @@ public class ApiSteps {
     @Then("the response field {string} equals {string}")
     public void fieldEquals(String field, String expected) {
         Object v = r.jsonPath().get(field);
-        // resolve() lets a scenario assert against a value captured earlier (e.g. "equals
-        // \"{{caseSerial}}\""), not just a literal — mirrors what postWithBody()/get() already
-        // do for {{ts}} and captured fields in the request itself.
         assertEquals(resolve(expected), String.valueOf(v), "Field '" + field + "' — response body was: " + r.getBody().asString());
+    }
+
+    @Then("the response field {string} equals the number {string}")
+    public void fieldEqualsNumber(String field, String expected) {
+        Object v = r.jsonPath().get(field);
+        assertNotNull(v, "Missing field '" + field + "' — response body was: " + r.getBody().asString());
+        assertEquals(0, new java.math.BigDecimal(String.valueOf(v)).compareTo(new java.math.BigDecimal(expected)),
+                "Field '" + field + "' was " + v + ", expected " + expected);
+    }
+
+    @Then("the list field {string} contains {string}")
+    public void listContains(String field, String expected) {
+        java.util.List<Object> values = r.jsonPath().getList(field);
+        assertNotNull(values, "No list at '" + field + "' — response body was: " + r.getBody().asString());
+        assertTrue(values.stream().map(String::valueOf).anyMatch(resolve(expected)::equals),
+                "Expected '" + resolve(expected) + "' in " + field + " = " + values);
+    }
+
+    @Then("the response is a list of at least {int} item(s)")
+    public void listSize(int min) {
+        java.util.List<Object> items = r.jsonPath().getList("$");
+        assertNotNull(items, "Response is not a JSON list: " + r.getBody().asString());
+        assertTrue(items.size() >= min, "Expected at least " + min + " items, got " + items.size());
     }
 
     @Then("the response field {string} is present")
